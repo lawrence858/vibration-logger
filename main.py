@@ -215,6 +215,7 @@ def post_update_to_service(values):
     print(f'====== sending values over http: {len(values)}')
     result = remote.append_values(values)
     print(result)
+    update_if_available(result.get('ota_version'), result.get('ota_url'))
     with timestamp_lock:
         if result.get('status') == 'success':
             if result.get('last_timestamp') > last_recorded_timestamp and result.get('last_timestamp').startswith('20'):  # Y2.1K bug ;-)
@@ -233,8 +234,20 @@ def post_heartbeat_to_service(data):
     print(f'====== sending heartbeat over http: {json.dumps(data)}')
     result = remote.ping(data)
     print(result)
+    update_if_available(result.get('ota_version'), result.get('ota_url'))
     if result.get('status') != 'success':
         print_and_log(f'ping not successful.')
+
+
+def update_if_available(ota_version, ota_url):
+    if ota_version and ota_url and ota_url.startswith('http'):
+        try:
+            if updater.install_update_if_available(__version__, ota_version, ota_url):
+                print(f'Installed version {ota_version}. Rebooting.')
+                time.sleep(3)
+                machine.reset()
+        except Exception as e:
+            print_and_log(f'OTA update error: {e}')
 
 
 def initialize():
@@ -268,6 +281,7 @@ def initialize():
         mpu = MPU6050(i2c, MPU6050_ADDR)
 
         init_response = remote.initialize(config.get('timezone', 'America/Los_Angeles'), __version__)
+        update_if_available(init_response.get('ota_version'), init_response.get('ota_url'))
         if init_response.get('status') == 'error' or 'current_time' not in init_response:
             raise Exception(init_response.get('message', 'time setting error'))
         set_time_from_iso8601(init_response.get('current_time'))
