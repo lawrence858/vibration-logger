@@ -11,7 +11,7 @@ import json
 from remote_sheet import RemoteSheet
 import updater
 
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 # configure pin numbers dynamically based on the device
 (sysname, nodename, sys_release, sys_version, machine_info) = os.uname()

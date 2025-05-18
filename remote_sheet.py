@@ -3,9 +3,7 @@ import network
 import gc
 import ujson
 import urequests
-import machine
 import binascii
-
 
 class RemoteSheet:
     def __init__(self, ssid, password, url, logger=None):
@@ -14,8 +12,11 @@ class RemoteSheet:
         self.url = url
         self.logger = logger if logger else print
         self.wlan = network.WLAN(network.STA_IF)
-        self.device_id = binascii.hexlify(machine.unique_id()).decode('utf-8')
         self.wlan.active(True)
+        # due to an apparent bug machine.unique_id() is not unique on the esp32c6.
+        # use the MAC address instead.
+        mac = self.wlan.config('mac')  # get the MAC address as bytes
+        self.device_id = binascii.hexlify(mac).decode()
 
     def connect(self):
         if not self.wlan.isconnected():
