@@ -11,7 +11,7 @@ import json
 from remote_sheet import RemoteSheet
 import updater
 
-__version__ = '0.9.1'
+__version__ = '1.0.0'
 
 # configure pin numbers dynamically based on the device
 (sysname, nodename, sys_release, sys_version, machine_info) = os.uname()
@@ -34,8 +34,8 @@ MPU6050_ADDR = 0x69  # connect A0 to change the address from the default 0x68
 SAMPLING_INTERVAL_MS = 200  # measuring the vibration takes up a big portion of this time
 TEMPERATURE_INTERVAL_MS = 60_000  # wait this long between taking temperature/pressure samples
 BLUETOOTH_INTERVAL_MS = 10_000  # wait this long between bluetooth updates
-UPDATE_INTERVAL_MS = 15_000  # TODO: increase. check this often if there is new data to post
-HEARTBEAT_INTERVAL_MS = 30 * 60_000  # TODO: increase
+UPDATE_INTERVAL_MS = 120_000  # check this often if there is new data to post
+HEARTBEAT_INTERVAL_MS = 240 * 60_000  # let the server know we're still alive if nothing else was posted
 VIBRATIONS_TEMP_FILE = 'vibrations_log.txt'
 
 # Global variables
@@ -259,7 +259,6 @@ def initialize():
     # try the must-have initialization and reset if it fails
     try:
         led = Pin(LED_PIN, Pin.OUT)
-        # TODO wdt = WDT(timeout=60 * 1000)  # 60 second timeout
 
         if not file_exists('config.json'):
             raise Exception('missing config.json')
@@ -322,14 +321,14 @@ def main_loop():
     ave_vib_on = 0.1
     ave_vib_off = 0
     alpha = 0.01  # Weight for new readings
-    # TODO: log max and min in on & off periods excluding first and last samples. use a queue.
+    # future enhancement: also log max and min in on & off periods, excluding first and last samples.
 
     while True:
         try:
             with settings_lock:
                 vib_min_magnitude = vibration_minimum_magnitude
                 vib_min_seconds = vibration_minimum_seconds
-            # TODO wdt.feed()
+            wdt.feed()
             sample_time = time.ticks_ms()
             _, _, _, vib = mpu.get_accel_and_vibration_magnitude(50, 2)
             is_vibrating = vib > vib_min_magnitude
@@ -412,5 +411,6 @@ def main_loop():
 
 
 if __name__ == '__main__':
+    wdt = WDT(timeout=60 * 1000)  # 60 second timeout
     initialize()
     main_loop()
