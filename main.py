@@ -13,29 +13,65 @@ import updater
 
 __version__ = '1.0.1'
 
-# configure pin numbers dynamically based on the device
-(sysname, nodename, sys_release, sys_version, machine_info) = os.uname()
 
-if 'esp32c3' in machine_info.lower():
-    # assume xiao esp32c3 board
-    ADC_PIN = 2
-    SDA_PIN = 6
-    SCL_PIN = 7
-    LED_PIN = 20  # could attach an external LED
-else:
-    # assume xiao esp32c6 board
-    ADC_PIN = 0
-    SDA_PIN = 22
-    SCL_PIN = 23
-    LED_PIN = 15  # internal LED for XIAO ESP32-C6
+class Config:
+    def __init__(self):
+        self.vibration_minimum_magnitude = 0.08
+        self.vibration_minimum_seconds = 9
+        self.max_exp_mag_off = 0.0088
+        self.timezone = 'America/Los_Angeles'
 
+        (sysname, nodename, sys_release, sys_version, machine_info) = os.uname()
+        if 'esp32c3' in machine_info.lower():
+            # assume xiao esp32c3 board
+            self.adc_pin = 2
+            self.sda_pin = 6
+            self.scl_pin = 7
+            self.led_pin = 20  # could attach an external LED
+        else:
+            # assume xiao esp32c6 board
+            self.adc_pin = 0
+            self.sda_pin = 22
+            self.scl_pin = 23
+            self.led_pin = 15  # internal LED for XIAO ESP32-C6
+
+        # Timing intervals (ms)
+        self.sampling_interval = 200  # measuring the vibration takes up a big portion of this time
+        self.temperature_interval = 60_000  # wait this long between taking temperature/pressure samples
+        self.bluetooth_interval = 10_000  # wait this long between bluetooth updates
+        self.update_interval = 120_000  # check this often if there is new data to post
+        self.heartbeat_interval = 240 * 60_000  # let the server know we're still alive if nothing else was posted
+
+        # Load from config file
+        if not file_exists('config.json'):
+            raise Exception('missing config.json')
+        with open('config.json', 'r') as file:
+            config = json.load(file)
+
+        # Required fields
+        required = ['wifi_ssid', 'wifi_password', 'service_url']
+        missing = [f for f in required if f not in config]
+        if missing:
+            raise ValueError(f'Missing required config fields: {", ".join(missing)}')
+
+        # Store config values
+        self.wifi_ssid = config['wifi_ssid']
+        self.wifi_password = config['wifi_password']
+        self.service_url = config['service_url']
+        self.timezone = config.get('timezone', self.timezone)
+
+    def update_vibration_settings(self, settings):
+        """Update vibration settings if they are valid"""
+        if 'vibration_minimum_magnitude' in settings and 0 < settings['vibration_minimum_magnitude'] < 10:
+            self.vibration_minimum_magnitude = settings['vibration_minimum_magnitude']
+        if 'vibration_minimum_seconds' in settings and 0 < settings['vibration_minimum_seconds'] < 24 * 60 * 60:
+            self.vibration_minimum_seconds = settings['vibration_minimum_seconds']
+        if 'max_exp_mag_off' in settings and 0 < settings['max_exp_mag_off'] < 0.1:
+            self.max_exp_mag_off = settings['max_exp_mag_off']
+
+
+# Constants
 MPU6050_ADDR = 0x69  # connect A0 to change the address from the default 0x68
-
-SAMPLING_INTERVAL_MS = 200  # measuring the vibration takes up a big portion of this time
-TEMPERATURE_INTERVAL_MS = 60_000  # wait this long between taking temperature/pressure samples
-BLUETOOTH_INTERVAL_MS = 10_000  # wait this long between bluetooth updates
-UPDATE_INTERVAL_MS = 120_000  # check this often if there is new data to post
-HEARTBEAT_INTERVAL_MS = 240 * 60_000  # let the server know we're still alive if nothing else was posted
 VIBRATIONS_TEMP_FILE = 'vibrations_log.txt'
 
 # Global variables
@@ -50,8 +86,7 @@ settings_lock = _thread.allocate_lock()
 led = None
 remote = None
 bmp = None
-vibration_minimum_magnitude = 0
-vibration_minimum_seconds = 0
+config = None
 
 
 def file_exists(filename):
@@ -210,7 +245,7 @@ def ble_advertise():
 
 
 def post_update_to_service(values):
-    global last_recorded_timestamp, vibration_minimum_magnitude, vibration_minimum_seconds
+    global last_recorded_timestamp, config
     gc.collect()
     print(f'====== sending values over http: {len(values)}')
     result = remote.append_values(values)
@@ -223,10 +258,7 @@ def post_update_to_service(values):
             else:
                 last_recorded_timestamp = values[-1].get('timestamp', last_recorded_timestamp)
     with settings_lock:
-        if 'vibration_minimum_magnitude' in result and 0 < result.get('vibration_minimum_magnitude') < 10:
-            vibration_minimum_magnitude = result.get('vibration_minimum_magnitude')
-        if 'vibration_minimum_seconds' in result and 0 < result.get('vibration_minimum_seconds') < 24 * 60 * 60:
-            vibration_minimum_seconds = result.get('vibration_minimum_seconds')
+        config.update_vibration_settings(result)
 
 
 def post_heartbeat_to_service(data):
@@ -251,42 +283,28 @@ def update_if_available(ota_version, ota_url):
 
 
 def initialize():
-    global led, remote, mpu, bmp, vibration_minimum_magnitude, vibration_minimum_seconds
+    global led, remote, mpu, bmp, config
 
     i2c = None
     print_and_log('Restarting.')
 
     # try the must-have initialization and reset if it fails
     try:
-        led = Pin(LED_PIN, Pin.OUT)
-
-        if not file_exists('config.json'):
-            raise Exception('missing config.json')
-        with open('config.json', 'r') as file:
-            config = json.load(file)
-        if 'wifi_ssid' not in config or 'wifi_password' not in config or 'service_url' not in config:
-            raise ValueError('missing wifi_ssid or wifi_password in config.json')
-
-        # get config values with defaults
-        wifi_ssid = config.get('wifi_ssid')
-        wifi_password = config.get('wifi_password')
-        service_url = config.get('service_url')
-
-        remote = RemoteSheet(wifi_ssid, wifi_password, service_url, print_and_log)
-        i2c = I2C(0, scl=Pin(SCL_PIN), sda=Pin(SDA_PIN))
+        led = Pin(config.led_pin, Pin.OUT)
+        remote = RemoteSheet(config.wifi_ssid, config.wifi_password, config.service_url, print_and_log)
+        i2c = I2C(0, scl=Pin(config.scl_pin), sda=Pin(config.sda_pin))
         connected_i2c_devices = i2c.scan()
         if MPU6050_ADDR not in connected_i2c_devices:
             raise Exception('MPU6050 not found')
         mpu = MPU6050(i2c, MPU6050_ADDR)
 
-        init_response = remote.initialize(config.get('timezone', 'America/Los_Angeles'), __version__)
+        init_response = remote.initialize(config.timezone, __version__)
         update_if_available(init_response.get('ota_version'), init_response.get('ota_url'))
         if init_response.get('status') == 'error' or 'current_time' not in init_response:
             raise Exception(init_response.get('message', 'time setting error'))
         set_time_from_iso8601(init_response.get('current_time'))
-        vibration_minimum_magnitude = init_response.get('vibration_minimum_magnitude', 0.08)
-        vibration_minimum_seconds = init_response.get('vibration_minimum_seconds', 9)
-        print(time.localtime(), vibration_minimum_magnitude, vibration_minimum_seconds)
+        config.update_vibration_settings(init_response)
+        print(time.localtime(), config.vibration_minimum_magnitude, config.vibration_minimum_seconds, config.max_exp_mag_off)
 
     except Exception as e:
         print_and_log(f'Critical init error: {e}')
@@ -309,8 +327,8 @@ def initialize():
 def main_loop():
     global temp_f
 
-    temperature_sample_time = -TEMPERATURE_INTERVAL_MS
-    bluetooth_update_time = -BLUETOOTH_INTERVAL_MS
+    temperature_sample_time = -config.temperature_interval
+    bluetooth_update_time = -config.bluetooth_interval
     last_update_check_time = 0
     last_post_time = 0
     is_vibrating, was_vibrating = False, False
@@ -321,13 +339,13 @@ def main_loop():
     ave_vib_on = 0.1
     ave_vib_off = 0
     alpha = 0.01  # Weight for new readings
-    # future enhancement: also log max and min in on & off periods, excluding first and last samples.
 
     while True:
         try:
             with settings_lock:
-                vib_min_magnitude = vibration_minimum_magnitude
-                vib_min_seconds = vibration_minimum_seconds
+                vib_min_magnitude = config.vibration_minimum_magnitude
+                vib_min_seconds = config.vibration_minimum_seconds
+                max_expected_off = config.max_exp_mag_off
             wdt.feed()
             sample_time = time.ticks_ms()
             _, _, _, vib = mpu.get_accel_and_vibration_magnitude(50, 2)
@@ -342,7 +360,6 @@ def main_loop():
             if is_vibrating != was_vibrating:
                 if is_vibrating:
                     print(f'crossed {vib_min_magnitude} and waiting for {vib_min_seconds}')
-                if is_vibrating:
                     vibration_start_ticks = sample_time
                     vibration_start_timestamp = iso8601_time()
                     ave_vib_on = vib  # Start with current reading for the new vibration period
@@ -366,15 +383,17 @@ def main_loop():
             led.value(not is_vibrating)  # use the LED to indicate we're getting vibrations. false is ON
             was_vibrating = is_vibrating
 
-            if time.ticks_diff(sample_time, temperature_sample_time) > TEMPERATURE_INTERVAL_MS:
+            # Periodic tasks
+
+            if time.ticks_diff(sample_time, temperature_sample_time) > config.temperature_interval:
                 temperature_sample_time = sample_time
                 temp_f = read_temperature()
 
-            if time.ticks_diff(sample_time, bluetooth_update_time) > BLUETOOTH_INTERVAL_MS:
+            if time.ticks_diff(sample_time, bluetooth_update_time) > config.bluetooth_interval:
                 bluetooth_update_time = sample_time
                 ble_advertise()
 
-            if not is_vibrating and time.ticks_diff(sample_time, last_update_check_time) > UPDATE_INTERVAL_MS:
+            if not is_vibrating and time.ticks_diff(sample_time, last_update_check_time) > config.update_interval:
                 last_update_check_time = sample_time
                 with timestamp_lock:
                     omit_until = last_recorded_timestamp
@@ -386,22 +405,22 @@ def main_loop():
                 else:
                     print('nothing new to log')
 
-            if time.ticks_diff(sample_time, last_post_time) > HEARTBEAT_INTERVAL_MS:
+            if time.ticks_diff(sample_time, last_post_time) > config.heartbeat_interval:
                 last_post_time = sample_time
-                _thread.start_new_thread(
-                    post_heartbeat_to_service, ({
-                                                    'vib': '{:.3f}'.format(vib),
-                                                    'is_vibrating': is_vibrating,
-                                                    'temperature': '{:.1f}'.format(temp_f),
-                                                    'ave_vib_on': '{:.3f}'.format(ave_vib_on),
-                                                    'ave_vib_off': '{:.3f}'.format(ave_vib_off),
-                                                    'count': vibration_count,
-                                                    'version': __version__,
-                                                    'last_log_line': last_log_line
-                                                },))
+                heartbeat_data = {
+                    'vib': '{:.3f}'.format(vib),
+                    'is_vibrating': is_vibrating,
+                    'temperature': '{:.1f}'.format(temp_f),
+                    'ave_vib_on': '{:.3f}'.format(ave_vib_on),
+                    'ave_vib_off': '{:.3f}'.format(ave_vib_off),
+                    'count': vibration_count,
+                    'version': __version__,
+                    'last_log_line': last_log_line
+                }
+                _thread.start_new_thread(post_heartbeat_to_service, (heartbeat_data,))
 
             elapsed_time = time.ticks_diff(time.ticks_ms(), sample_time)
-            sleep_duration = max(10, SAMPLING_INTERVAL_MS - elapsed_time)
+            sleep_duration = max(10, config.sampling_interval - elapsed_time)
             time.sleep_ms(sleep_duration)
 
         except Exception as e:
@@ -412,5 +431,6 @@ def main_loop():
 
 if __name__ == '__main__':
     wdt = WDT(timeout=60 * 1000)  # 60 second timeout
+    config = Config()
     initialize()
     main_loop()
