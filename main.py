@@ -11,14 +11,14 @@ import json
 from remote_sheet import RemoteSheet
 import updater
 
-__version__ = '1.0.1'
+__version__ = '1.0.2'
 
 
 class Config:
     def __init__(self):
         self.vibration_minimum_magnitude = 0.08
         self.vibration_minimum_seconds = 9
-        self.max_exp_mag_off = 0.0088
+        self.max_exp_mag_off = 0.009
         self.timezone = 'America/Los_Angeles'
 
         (sysname, nodename, sys_release, sys_version, machine_info) = os.uname()
@@ -334,6 +334,8 @@ def main_loop():
     is_vibrating, was_vibrating = False, False
     vibration_start_ticks = 0
     vibration_count = 0
+    # use these values to keep track of secondary vibrations when the main vibration is 'off'
+    total_vib_off_count, large_vib_off_count = 0, 0
 
     # the following two initial values only apply to the very first cycle - slight inaccuracy is okay.
     ave_vib_on = 0.1
@@ -356,28 +358,36 @@ def main_loop():
                 ave_vib_on = (1 - alpha) * ave_vib_on + alpha * vib
             else:
                 ave_vib_off = (1 - alpha) * ave_vib_off + alpha * vib
-
+                total_vib_off_count += 1
+                if vib > max_expected_off:
+                    large_vib_off_count += 1
             if is_vibrating != was_vibrating:
                 if is_vibrating:
+                    # Vibration started
                     print(f'crossed {vib_min_magnitude} and waiting for {vib_min_seconds}')
                     vibration_start_ticks = sample_time
                     vibration_start_timestamp = iso8601_time()
                     ave_vib_on = vib  # Start with current reading for the new vibration period
                 else:
+                    # Vibration ended
                     vibration_duration_sec = time.ticks_diff(sample_time, vibration_start_ticks) / 1000
                     if vibration_duration_sec >= vib_min_seconds:
                         vibration_count += 1
+                        large_vib_off_ratio = large_vib_off_count / total_vib_off_count if total_vib_off_count > 0 else 0
                         print_and_log('count: {}, last vibration: {:.1f} seconds'.format(vibration_count, vibration_duration_sec), 'data')
                         log_vibration_stats({
                             'timestamp': vibration_start_timestamp,
                             'duration': '{:.1f}'.format(vibration_duration_sec),
                             'temperature': '{:.1f}'.format(temp_f),
                             'ave_vib_on': '{:.3f}'.format(ave_vib_on),
-                            'ave_vib_off': '{:.3f}'.format(ave_vib_off),
+                            'ave_vib_off': '{:.4f}'.format(ave_vib_off),
+                            'large_vib_off_ratio': '{:.4f}'.format(large_vib_off_ratio),
+                            'max_expected_off': '{:.4f}'.format(max_expected_off),
                             'count': vibration_count,
                             'last_log_line': last_log_line,
                             'version': __version__
                         }, 25)
+                        total_vib_off_count, large_vib_off_count = 0, 0
                     ave_vib_off = vib  # Start with current reading for the new non-vibration period
 
             led.value(not is_vibrating)  # use the LED to indicate we're getting vibrations. false is ON
