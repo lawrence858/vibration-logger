@@ -11,7 +11,7 @@ import json
 from remote_sheet import RemoteSheet
 import updater
 
-__version__ = '1.0.2'
+__version__ = '1.0.3'
 
 
 class Config:
@@ -78,6 +78,7 @@ VIBRATIONS_TEMP_FILE = 'vibrations_log.txt'
 last_log_line = '...'
 last_data_line = '???'
 temp_f = 0
+vibration_count = 0
 mpu = None
 last_recorded_timestamp = '2000-01-01T00:00:00'
 timestamp_lock = _thread.allocate_lock()
@@ -250,6 +251,11 @@ def post_update_to_service(values):
     print(f'====== sending values over http: {len(values)}')
     result = remote.append_values(values)
     print(result)
+    # reset if needed
+    if 'reset_count' in result and result.get('reset_count') >= vibration_count:
+        print_and_log(f'Reset count: {result.get("reset_count")} >= vibration count: {vibration_count}')
+        time.sleep(1)
+        machine.reset()
     update_if_available(result.get('ota_version'), result.get('ota_url'))
     with timestamp_lock:
         if result.get('status') == 'success':
@@ -325,7 +331,7 @@ def initialize():
 
 
 def main_loop():
-    global temp_f
+    global temp_f, vibration_count
 
     temperature_sample_time = -config.temperature_interval
     bluetooth_update_time = -config.bluetooth_interval
