@@ -2,6 +2,7 @@ import gc
 import time
 import os
 import _thread
+from uarray import array
 import machine
 from machine import Pin, I2C, WDT, Timer
 from bmp280 import BMP280, BMP280_CASE_INDOOR
@@ -11,7 +12,7 @@ import json
 from remote_sheet import RemoteSheet
 import updater
 
-__version__ = '1.0.3'
+__version__ = '1.0.4'
 
 
 class Config:
@@ -252,8 +253,8 @@ def post_update_to_service(values):
     result = remote.append_values(values)
     print(result)
     # reset if needed
-    if 'reset_count' in result and result.get('reset_count') >= vibration_count:
-        print_and_log(f'Reset count: {result.get("reset_count")} >= vibration count: {vibration_count}')
+    if 'reset_count' in result and vibration_count >= result.get('reset_count'):
+        print_and_log(f'Reset count reached: {vibration_count} >= {result.get("reset_count")}')
         time.sleep(1)
         machine.reset()
     update_if_available(result.get('ota_version'), result.get('ota_url'))
@@ -286,6 +287,16 @@ def update_if_available(ota_version, ota_url):
                 machine.reset()
         except Exception as e:
             print_and_log(f'OTA update error: {e}')
+
+
+def has_n_large_values(arr, n, threshold):
+    count = 0
+    for val in arr:
+        if val > threshold:
+            count += 1
+            if count >= n:
+                return True
+    return False
 
 
 def initialize():
@@ -332,6 +343,7 @@ def initialize():
 
 def main_loop():
     global temp_f, vibration_count
+    VIB_OFF_BUFFER_LEN = 100
 
     temperature_sample_time = -config.temperature_interval
     bluetooth_update_time = -config.bluetooth_interval
@@ -342,6 +354,9 @@ def main_loop():
     vibration_count = 0
     # use these values to keep track of secondary vibrations when the main vibration is 'off'
     total_vib_off_count, large_vib_off_count = 0, 0
+    total_vib_off_segment_count, large_vib_off_segment_count = 0, 0
+    vib_off_values = array('f', [0.0] * VIB_OFF_BUFFER_LEN)
+    vib_off_index = 0
 
     # the following two initial values only apply to the very first cycle - slight inaccuracy is okay.
     ave_vib_on = 0.1
@@ -365,6 +380,14 @@ def main_loop():
             else:
                 ave_vib_off = (1 - alpha) * ave_vib_off + alpha * vib
                 total_vib_off_count += 1
+
+                vib_off_values[vib_off_index] = vib
+                vib_off_index = (vib_off_index + 1) % VIB_OFF_BUFFER_LEN
+                if vib_off_index == 0:
+                    total_vib_off_segment_count += 1
+                    if has_n_large_values(vib_off_values, round(VIB_OFF_BUFFER_LEN / 10), max_expected_off):
+                        large_vib_off_segment_count += 1
+
                 if vib > max_expected_off:
                     large_vib_off_count += 1
             if is_vibrating != was_vibrating:
@@ -388,12 +411,18 @@ def main_loop():
                             'ave_vib_on': '{:.3f}'.format(ave_vib_on),
                             'ave_vib_off': '{:.4f}'.format(ave_vib_off),
                             'large_vib_off_ratio': '{:.4f}'.format(large_vib_off_ratio),
+                            'large_vib_off_segments': '{}'.format(large_vib_off_segment_count),
+                            'total_vib_off_segments': '{}'.format(total_vib_off_segment_count),
                             'max_expected_off': '{:.4f}'.format(max_expected_off),
                             'count': vibration_count,
                             'last_log_line': last_log_line,
                             'version': __version__
                         }, 25)
                         total_vib_off_count, large_vib_off_count = 0, 0
+                        total_vib_off_segment_count, large_vib_off_segment_count = 0, 0
+                        for i in range(len(vib_off_values)):
+                            vib_off_values[i] = 0.0
+                        vib_off_index = 0
                     ave_vib_off = vib  # Start with current reading for the new non-vibration period
 
             led.value(not is_vibrating)  # use the LED to indicate we're getting vibrations. false is ON
