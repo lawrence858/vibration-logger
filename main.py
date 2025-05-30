@@ -12,7 +12,7 @@ import json
 from remote_sheet import RemoteSheet
 import updater
 
-__version__ = '1.0.4'
+__version__ = '1.0.5'
 
 
 class Config:
@@ -289,16 +289,6 @@ def update_if_available(ota_version, ota_url):
             print_and_log(f'OTA update error: {e}')
 
 
-def has_n_large_values(arr, n, threshold):
-    count = 0
-    for val in arr:
-        if val > threshold:
-            count += 1
-            if count >= n:
-                return True
-    return False
-
-
 def initialize():
     global led, remote, mpu, bmp, config
 
@@ -352,9 +342,11 @@ def main_loop():
     is_vibrating, was_vibrating = False, False
     vibration_start_ticks = 0
     vibration_count = 0
+
     # use these values to keep track of secondary vibrations when the main vibration is 'off'
     total_vib_off_count, large_vib_off_count = 0, 0
-    total_vib_off_segment_count, large_vib_off_segment_count = 0, 0
+    total_vib_off_segment_count, large_vib_off_segment_count, last_vib_off_seg, first_vib_off_seg = 0, 0, 0, 0
+    max_large_vals_off, min_large_vals_on = -1, -1
     vib_off_values = array('f', [0.0] * VIB_OFF_BUFFER_LEN)
     vib_off_index = 0
 
@@ -385,8 +377,18 @@ def main_loop():
                 vib_off_index = (vib_off_index + 1) % VIB_OFF_BUFFER_LEN
                 if vib_off_index == 0:
                     total_vib_off_segment_count += 1
-                    if has_n_large_values(vib_off_values, round(VIB_OFF_BUFFER_LEN / 10), max_expected_off):
+                    num_large_values = sum(1 for val in vib_off_values if val > max_expected_off)
+                    if num_large_values >= round(VIB_OFF_BUFFER_LEN / 10):
                         large_vib_off_segment_count += 1
+                        last_vib_off_seg = total_vib_off_segment_count
+                        if first_vib_off_seg <= 0:
+                            first_vib_off_seg = total_vib_off_segment_count
+                        if min_large_vals_on == -1:
+                            min_large_vals_on = num_large_values
+                        else:
+                            min_large_vals_on = min(min_large_vals_on, num_large_values)
+                    else:
+                        max_large_vals_off = max(max_large_vals_off, num_large_values)
 
                 if vib > max_expected_off:
                     large_vib_off_count += 1
@@ -413,13 +415,18 @@ def main_loop():
                             'large_vib_off_ratio': '{:.4f}'.format(large_vib_off_ratio),
                             'large_vib_off_segments': '{}'.format(large_vib_off_segment_count),
                             'total_vib_off_segments': '{}'.format(total_vib_off_segment_count),
+                            'last_vib_off_seg': '{}'.format(last_vib_off_seg),
+                            'first_vib_off_seg': '{}'.format(first_vib_off_seg),
+                            'min_large_vals_on': '{}'.format(min_large_vals_on),
+                            'max_large_vals_off': '{}'.format(max_large_vals_off),
                             'max_expected_off': '{:.4f}'.format(max_expected_off),
                             'count': vibration_count,
                             'last_log_line': last_log_line,
                             'version': __version__
                         }, 25)
                         total_vib_off_count, large_vib_off_count = 0, 0
-                        total_vib_off_segment_count, large_vib_off_segment_count = 0, 0
+                        total_vib_off_segment_count, large_vib_off_segment_count, last_vib_off_seg, first_vib_off_seg = 0, 0, 0, 0
+                        max_large_vals_off, min_large_vals_on = -1, -1
                         for i in range(len(vib_off_values)):
                             vib_off_values[i] = 0.0
                         vib_off_index = 0
