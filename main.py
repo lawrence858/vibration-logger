@@ -12,7 +12,7 @@ import json
 from remote_sheet import RemoteSheet
 import updater
 
-__version__ = '1.0.5'
+__version__ = '1.0.6'
 
 
 class Config:
@@ -334,6 +334,7 @@ def initialize():
 def main_loop():
     global temp_f, vibration_count
     VIB_OFF_BUFFER_LEN = 100
+    VIB_OFF_COUNT_THRESHOLD = 0.07
 
     temperature_sample_time = -config.temperature_interval
     bluetooth_update_time = -config.bluetooth_interval
@@ -378,7 +379,7 @@ def main_loop():
                 if vib_off_index == 0:
                     total_vib_off_segment_count += 1
                     num_large_values = sum(1 for val in vib_off_values if val > max_expected_off)
-                    if num_large_values >= round(VIB_OFF_BUFFER_LEN / 10):
+                    if num_large_values >= round(VIB_OFF_COUNT_THRESHOLD * VIB_OFF_BUFFER_LEN):
                         large_vib_off_segment_count += 1
                         last_vib_off_seg = total_vib_off_segment_count
                         if first_vib_off_seg <= 0:
